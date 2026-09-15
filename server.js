@@ -8,7 +8,7 @@ import { dbconnection } from "./db/mongoDB.js";
 import { genJWT } from "./jwt/jwt.js";
 import { postgresPool, connectPostgreSQL } from "./db/pg.js";
 import { validateLocation } from "./validation/location.validation.js";
-
+import { validateTier } from "./validation/tier.validation.js";
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded());
@@ -109,7 +109,7 @@ app.post("/auth/login", async (req, res) => {
 	}
 });
 
-app.get("api/zone/redzones", async (req, res) => {
+app.get("/api/zone/redzones", async (req, res) => {
 	try {
 		const result = await postgresPool.query(`SELECT json_build_object(
           'type', 'FeatureCollection',
@@ -177,17 +177,18 @@ app.get("/api/zone/check-location", (req, res) => {
 });
 
 app.get("/api/zone/nearest-green-zone", (req, res) => {
-	const validateData = validateLocation.validate(req.query);
-	const { error, value } = validateData;
-	if (error) {
-		return res.status(429).json({
-			success: false,
-			message: "Invalid Coordinates!",
-		});
-	}
-	const { lat, lon } = value;
-	const result = postgresPool.query(
-		`
+	try {
+		const validateData = validateLocation.validate(req.query);
+		const { error, value } = validateData;
+		if (error) {
+			return res.status(429).json({
+				success: false,
+				message: "Invalid Coordinates!",
+			});
+		}
+		const { lat, lon } = value;
+		const result = postgresPool.query(
+			`
       SELECT
         zone_class,
         area_sqkm,
@@ -201,9 +202,68 @@ app.get("/api/zone/nearest-green-zone", (req, res) => {
       ORDER BY wkb_geometry <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)
       LIMIT 1;
     `,
-		[lon, lat],
-	);
+			[lon, lat],
+		);
+		if (result.rows.length === 0) {
+			return res.status(404).json({
+				message: "No green zone found for this location.",
+			});
+		}
+		const site = result.rows[0];
+		return res.status(200).json({
+			from_location: { lat: parseFloat(lat), lon: parseFloat(lon) },
+			nearest_safe_zone: {
+				zone_area_sqkm: site.area_sqkm,
+				distance_km: parseFloat(site.distance_km.toFixed(2)),
+				nearest_point: site.nearest_point,
+			},
+		});
+	} catch (err) {
+		console.log(err);
+		return res.status(500).json({
+			message: "Something went wrong!",
+		});
+	}
 });
+
+app.get("/api/zone/priority-villages", (req, res) => {
+	try {
+		const validateData = validateTier.validate(req.query);
+		const { error, value } = validateData;
+		if (error) {
+			return res.status(429).json({
+				success: false,
+				message:
+					"tier must be one of ['IMMEDIATE', 'SHORT_TERM', 'MEDIUM_TERM', 'MONITOR']",
+			});
+		}
+		const { tier } = value;
+		const result = postgresPool.query(
+			`
+          SELECT vill_name AS village_name, sub_dist AS sub_district,
+          population, pct_red, estimated_affected_population, priority_tier
+          FROM villages
+          WHERE priority_tier = $1
+          ORDER BY estimated_affected_population DESC;
+      `,
+			tier.toUpperCase(),
+		);
+		res.status(200).json({
+			count: result.rows.length,
+			total_estimated_affected_population: result.rows.reduce(
+				(sum, r) => sum + r.estimated_affected_population,
+				0,
+			),
+			villages: result.rows,
+		});
+	} catch (err) {
+		console.log(err);
+		return res.status(500).json({
+			message: "Something went wrong!",
+		});
+	}
+});
+
 const dbConnect = async () => {
 	try {
 		console.log(process.env.DB_USER);
