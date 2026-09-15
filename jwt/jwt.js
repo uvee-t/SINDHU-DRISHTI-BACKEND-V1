@@ -1,7 +1,7 @@
 import jwt from "jsonwebtoken";
-const genJWT = (distCode, username)=>{
+const genJWT = (distCode, email)=>{
         try{
-                return jwt.sign({distCode, username}, process.env.SECRET_KEY, {expiresIn: "1h"});  
+                return jwt.sign({distCode, email}, process.env.SECRET_KEY, {expiresIn: "1h"});  
         }
         catch(err){
                 console.log(err);
